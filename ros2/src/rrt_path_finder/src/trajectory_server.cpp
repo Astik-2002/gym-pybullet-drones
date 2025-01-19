@@ -25,7 +25,7 @@ private:
     rclcpp::Subscription<custom_interface_gym::msg::DesTrajectory>::SharedPtr trajectory_sub;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odometry_sub;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr dest_pts_sub;
-
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr yaw_target_sub;
     rclcpp::Publisher<custom_interface_gym::msg::TrajMsg>::SharedPtr command_pub;
     rclcpp::TimerBase::SharedPtr command_timer;
 
@@ -33,7 +33,7 @@ private:
     std::vector<Eigen::Matrix<double, 3, 6>> current_coefficients;  // Vector of (3, D+1) matrices for each trajectory segment
     std::vector<double> segment_durations;
     Eigen::Vector3d current_pos{-2.0, 0.0, 1.5};
-    Eigen::Vector3d end_pos;
+    Eigen::Vector3d end_pos, yaw_target;
     bool _is_target_receive = false;
     bool _is_goal_arrive = false;
     bool _abort_hover_set = false;
@@ -48,6 +48,17 @@ private:
     nav_msgs::msg::Odometry _odom;
     rclcpp::Time _final_time = rclcpp::Time(0);
     rclcpp::Time _start_time = rclcpp::Time::max();
+    
+    double previous_yaw_ = 0.0; // Store the last yaw value
+    double dyaw_filtered_ = 0.0; // Filtered yaw rate
+    struct Parameters {
+        double dc = 0.1;                // Time step for yaw update
+        double w_max = 1.0;            // Maximum yaw rate
+        double alpha_filter_dyaw = 0.5; // Smoothing factor for dyaw
+    } par_;
+
+    bool face_yaw_goal = true; // Flag to determine yaw behavior
+
 
 public:
     TrajectoryServer()
@@ -64,6 +75,9 @@ public:
 
         dest_pts_sub = this->create_subscription<nav_msgs::msg::Path>(
             "waypoints", 1, std::bind(&TrajectoryServer::rcvGoalCallback, this, std::placeholders::_1));
+
+        yaw_target_sub = this->create_subscription<nav_msgs::msg::Path>(
+            "corridor_endpoint", 1, std::bind(&TrajectoryServer::rcvYawCallback, this, std::placeholders::_1));
 
         command_pub = this->create_publisher<custom_interface_gym::msg::TrajMsg>("rrt_command",10);
         // Timer for periodic command updates
@@ -94,6 +108,20 @@ public:
         
         _is_target_receive = true;
     }
+
+    void rcvYawCallback(const nav_msgs::msg::Path::SharedPtr yaw_msg)
+    {
+        if(_is_target_receive) return;
+        if (yaw_msg->poses.empty() || yaw_msg->poses[0].pose.position.z < 0.0)
+            return;
+
+        yaw_target(0) = yaw_msg->poses[0].pose.position.x;
+        yaw_target(1) = yaw_msg->poses[0].pose.position.y;
+        yaw_target(2) = yaw_msg->poses[0].pose.position.z;
+        std::cout<<"[yaw debug]: yaw target received"<<std::endl; 
+        
+    }
+
     void trajectoryCallback(const custom_interface_gym::msg::DesTrajectory::SharedPtr msg)
     {
         std::cout<<"in trajectory callback"<<std::endl;
@@ -177,6 +205,53 @@ public:
         _is_goal_arrive = true;
     }
 
+    void saturate(double& value, double min_val, double max_val)
+    {
+        value = std::min(std::max(value, min_val), max_val);
+    }
+
+    void angle_wrap(double& angle)
+    {
+        while (angle > M_PI) angle -= 2 * M_PI;
+        while (angle < -M_PI) angle += 2 * M_PI;
+    }
+
+    void yaw(double diff, custom_interface_gym::msg::TrajMsg& next_goal)
+    {
+        saturate(diff, -par_.dc * par_.w_max, par_.dc * par_.w_max);
+        double dyaw_not_filtered = copysign(1.0, diff) * par_.w_max;
+
+        dyaw_filtered_ = (1 - par_.alpha_filter_dyaw) * dyaw_not_filtered +
+                         par_.alpha_filter_dyaw * dyaw_filtered_;
+        next_goal.yaw = previous_yaw_ + dyaw_filtered_ * par_.dc;
+
+        previous_yaw_ = next_goal.yaw;
+    }
+
+    void getDesiredYaw(custom_interface_gym::msg::TrajMsg& next_goal, const Eigen::Vector3d& current_pos, const Eigen::Vector3d& goal_pos, const Eigen::Vector3d& heading_pos)
+    {
+        double desired_yaw = 0.0;
+
+        // Determine the direction based on the flag
+        if (face_yaw_goal)
+        {
+            // Face the goal
+            desired_yaw = atan2(goal_pos.y() - current_pos.y(),
+                                goal_pos.x() - current_pos.x());
+        }
+        else
+        {
+            // Face the direction of travel
+            Eigen::Vector3d direction = heading_pos - current_pos;
+            desired_yaw = atan2(direction.y(), direction.x());
+        }
+
+        double diff = desired_yaw - previous_yaw_;
+        angle_wrap(diff);
+
+        yaw(diff, next_goal);
+    }
+
     void commandCallback()
     {
         if (!has_trajectory || is_aborted)
@@ -210,25 +285,8 @@ public:
             std::cout<<"[Goal setting] current position: "<<current_pos[0]<<":"<<current_pos[1]<<":"<<current_pos[2]<<std::endl;
             std::cout<<"[Goal setting] command position: "<<traj_msg.position.x<<":"<<traj_msg.position.y<<":"<<traj_msg.position.z<<std::endl;
 
-            // Set velocity
-            traj_msg.velocity.x = 0;
-            traj_msg.velocity.y = 0;
-            traj_msg.velocity.z = 0;
-
-            // Set acceleration
-            traj_msg.acceleration.x = 0;
-            traj_msg.acceleration.y = 0;
-            traj_msg.acceleration.z = 0;
-
-            // Set jerk
-            traj_msg.jerk.x = 0;
-            traj_msg.jerk.y = 0;
-            traj_msg.jerk.z = 0;
-
-            // Set yaw 
-            traj_msg.yaw = 0;
-
             // Publish the message
+            traj_msg.hover = true;
             command_pub->publish(traj_msg); // Replace traj_publisher_ with your actual publisher variable
 
             return;
@@ -273,9 +331,8 @@ public:
         traj_msg.jerk.z = des_jerk.z();
 
         // Set yaw 
-        Eigen::Vector3d direction = des_pos - current_pos;    // Vector from start_pos to des_pos
-        double yaw = std::atan2(direction.y(), direction.x()); // Yaw in radians
-        traj_msg.yaw = 0.0;
+        // getDesiredYaw(traj_msg, current_pos, yaw_target, des_pos);
+        traj_msg.yaw = 0;
         std::cout<<"[Traj follow] error in position: "<<(current_pos - des_pos).norm()<<std::endl;
 
         // Publish the message

@@ -48,7 +48,7 @@ public:
         // rrt.setPt(startPt=start_point, endPt=end_point, xl=-5, xh=15, yl=-5, yh=15, zl=0.0, zh=1,
         //      max_iter=1000, sample_portion=0.1, goal_portion=0.05)
 
-        this->declare_parameter("safety_margin", 0.5);
+        this->declare_parameter("safety_margin", 0.7);
         this->declare_parameter("search_margin", 0.4);
         this->declare_parameter("max_radius", 2.0);
         this->declare_parameter("sample_range", 20.0);
@@ -67,7 +67,7 @@ public:
         this->declare_parameter("z_l", 0.5);
         this->declare_parameter("z_l2", -3.0);
 
-        this->declare_parameter("z_h", 2.5);
+        this->declare_parameter("z_h", 1.7);
         this->declare_parameter("z_h2", 3.5);
 
         this->declare_parameter("target_x", 0.0);
@@ -119,8 +119,8 @@ public:
 
         // Add the RRT waypoints publisher
         _rrt_waypoints_pub = this->create_publisher<nav_msgs::msg::Path>("rrt_waypoints", 1);
-        // _rrt_traj_pub = this->create_publisher<custom_interface_gym::msg::TrajMsg>("rrt_command",1);
         _rrt_des_traj_pub = this->create_publisher<custom_interface_gym::msg::DesTrajectory>("des_trajectory",10);
+        _corridor_endpoint_pub = this->create_publisher<nav_msgs::msg::Path>("corridor_endpoint", 1); // For yaw control
 
         // Subscribers
         // _obs_sub = this->create_subscription<std_msgs::msg::Float32MultiArray>(
@@ -154,6 +154,7 @@ private:
 
     // RRT waypoints publisher
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _rrt_waypoints_pub;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _corridor_endpoint_pub;
     // rclcpp::Publisher<custom_interface_gym::msg::TrajMsg>::SharedPtr _rrt_traj_pub;
     rclcpp::Publisher<custom_interface_gym::msg::DesTrajectory>::SharedPtr _rrt_des_traj_pub;
 
@@ -187,8 +188,8 @@ private:
     float smoothingEps = 0.01;
     float relcostto1 = 0.00001;
     int _max_samples;
-    double _commit_distance = 6.0;
-    double max_vel = 0.7;
+    double _commit_distance = 5.0;
+    double max_vel = 1.0;
     float threshold = 0.8;
     int trajectory_id = 0;
     int order = 5;
@@ -205,7 +206,7 @@ private:
     float dilateRadius = 0.7;
     float leafsize = 0.4;
     // Variables for target position, trajectory, odometry, etc.
-    Eigen::Vector3d _start_pos, _end_pos, _start_vel, _last_vel{0.0, 0.0, 0.0}, _start_acc;
+    Eigen::Vector3d _start_pos, _end_pos, _start_vel{0.0, 0.0, 0.0}, _last_vel{0.0, 0.0, 0.0}, _start_acc;
     Eigen::Vector3d _commit_target{0.0, 0.0, 0.0}, _corridor_end_pos;
 
 
@@ -266,7 +267,9 @@ private:
         //     std::chrono::seconds(_odom.header.stamp.sec) +
         //     std::chrono::nanoseconds(_odom.header.stamp.nanosec)
         // );
-
+        auto current_time = rclcpp::Time(_odom.header.stamp.sec, _odom.header.stamp.nanosec);
+        auto del_t = (current_time - odom_time).seconds();
+        _start_acc = (_start_vel - _last_vel)/(del_t);
         odom_time = rclcpp::Time(_odom.header.stamp.sec, _odom.header.stamp.nanosec);
         if(_rrtPathPlanner.getDis(_start_pos, _commit_target) < threshold)
         {
@@ -279,12 +282,15 @@ private:
 
             // std::cout<<"[commit debug] distance to endgoal: "<<_rrtPathPlanner.getDis(_start_pos, _end_pos)<<std::endl;
         }
-        if(_rrtPathPlanner.getDis(_start_pos, _end_pos) < 1.5)
+        if(_rrtPathPlanner.getDis(_start_pos, _end_pos) < 1.0)
         {
             _is_complete = true;   
         }
         checkSafeTrajectory();
-        // std::cout<<"[odom callback] distance to commit target: "<<_rrtPathPlanner.getDis(_start_pos, _commit_target)<<std::endl;
+        std::cout<<"[odom callback] distance to commit target: "<<_rrtPathPlanner.getDis(_start_pos, _commit_target)<<std::endl;
+        std::cout<<"[odom callback] current position "<<_start_pos.transpose()<<" distance left"<<_rrtPathPlanner.getDis(_start_pos, _end_pos)<<std::endl;
+        std::cout<<"[odom callback] debugging distance issue"<<(_start_pos - _end_pos).norm()<<std::endl;
+
         std::cout<<"[odom callback]  UAV speed: "<<_start_vel.norm()<<std::endl;
 
         // RCLCPP_WARN(this->get_logger(), "Received odometry: position(x: %.2f, y: %.2f, z: %.2f)",
@@ -380,7 +386,6 @@ private:
         }
 
         _rrt_waypoints_pub->publish(path_msg);
-        //RCLCPP_WARN(this->get_logger(),"rrt path published");
     }
 
     void getCorridorPoints()
@@ -405,6 +410,21 @@ private:
             }
             _corridor_end_pos = corridor_points[corridor_points.size()-1];
         }
+
+        nav_msgs::msg::Path corridor_endpos;
+        corridor_endpos.header.stamp = this->now();
+        corridor_endpos.header.frame_id = "ground_link";  // Adjust this frame to your use case
+
+        
+        geometry_msgs::msg::PoseStamped corridor_pose;
+        corridor_pose.header.stamp = this->now();
+        corridor_pose.header.frame_id = "ground_link";
+        corridor_pose.pose.position.x = _corridor_end_pos.x();
+        corridor_pose.pose.position.y = _corridor_end_pos.y();
+        corridor_pose.pose.position.z = _corridor_end_pos.z();
+        corridor_endpos.poses.push_back(corridor_pose);
+    
+        _corridor_endpoint_pub->publish(corridor_endpos);
     }
 
     void convexCover(const std::vector<Eigen::Vector3d> &path, 
@@ -513,13 +533,13 @@ private:
         }
     }
 
-    void traj_generation(Eigen::Vector3d _traj_start_pos, Eigen::Vector3d _traj_start_vel)
+    void traj_generation(Eigen::Vector3d _traj_start_pos, Eigen::Vector3d _traj_start_vel, Eigen::Vector3d _traj_start_acc)
     {
         auto t1 = std::chrono::steady_clock::now();
         // GCopter parameters
         Eigen::Matrix3d iniState;
         Eigen::Matrix3d finState;
-        iniState << _traj_start_pos, _traj_start_vel, Eigen::Vector3d::Zero();
+        iniState << _traj_start_pos, _traj_start_vel, _traj_start_acc;
         finState << _corridor_end_pos, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero();
         Eigen::VectorXd magnitudeBounds(5);
         Eigen::VectorXd penaltyWeights(5);
@@ -543,7 +563,7 @@ private:
         physicalParams(5) = 0.0001;
         int quadratureRes = 16;
         float weightT = 20.0;
-        float smoothingEps = 0.01;
+        float smoothingEps = 0.6;
         float relcostto1 = 1e-3;
         _traj.clear();
         if (!_gCopter.setup(weightT, iniState, finState, hpolys, INFINITY, smoothingEps, quadratureRes, magnitudeBounds, penaltyWeights, physicalParams))
@@ -636,7 +656,7 @@ private:
             convexDecompTime = elapsed_convex;
             std::cout<<"[Initial planning] time taken in corridor generation "<<elapsed_convex<<std::endl;
 
-            traj_generation(_start_pos, _start_vel);
+            traj_generation(_start_pos, _start_vel, Eigen::Vector3d::Zero());
             if(_is_traj_exist)
             {
                 _rrtPathPlanner.resetRoot(_commit_target);
@@ -686,6 +706,8 @@ private:
             {
                 // Reset the root of the RRT planner
                 // Get the updated path and publish it
+                auto t_curr = rclcpp::Clock().now();
+                auto del_t = (t_curr - trajstamp).seconds();
                 std::tie(_path, _radius) = _rrtPathPlanner.getPath();
                 _path_vector = matrixToVector(_path);
                 getCorridorPoints();
@@ -699,16 +721,17 @@ private:
                 std::cout<<"[Incremental planner] reached committed target, time taken in corridor generation = "<<elapsed<<std::endl;
                 Eigen::Vector3d new_traj_start_pos = _traj.getPos(_traj.getTotalDuration());
                 Eigen::Vector3d new_traj_start_vel{0.0, 0.0, 0.0};
-                
-                if(1.25*(convexDecompTime + traj_gen_time) < _traj.getTotalDuration()*0.5)
+                Eigen::Vector3d new_traj_start_acc{0.0, 0.0, 0.0};
+                if(1.25*(convexDecompTime + traj_gen_time) < _traj.getTotalDuration() - del_t)
                 {
-                    new_traj_start_pos = _traj.getPos(_traj.getTotalDuration()*0.5 + 1.25*(convexDecompTime + traj_gen_time));
-                    new_traj_start_vel = _traj.getVel(_traj.getTotalDuration()*0.5 + 1.25*(convexDecompTime + traj_gen_time));
+                    new_traj_start_pos = _traj.getPos(del_t + 1.25*(convexDecompTime + traj_gen_time));
+                    new_traj_start_vel = _traj.getVel(del_t + 1.25*(convexDecompTime + traj_gen_time));
+                    new_traj_start_acc = _traj.getAcc(del_t + 1.25*(convexDecompTime + traj_gen_time));
                 }
 
                 convexDecompTime = elapsed;
 
-                traj_generation(new_traj_start_pos, new_traj_start_vel);
+                traj_generation(new_traj_start_pos, new_traj_start_vel, new_traj_start_acc);
                 if(_is_traj_exist)
                 {
                     _rrtPathPlanner.resetRoot(_commit_target);
@@ -731,8 +754,8 @@ private:
             // std::cout<<"[Incremental planner] in refine and evaluate loop"<<std::endl;
             auto time_start_ref = std::chrono::steady_clock::now();
             // Continue refining and evaluating the path
-            _rrtPathPlanner.SafeRegionRefine(0.08);
-            _rrtPathPlanner.SafeRegionEvaluate(0.02);
+            _rrtPathPlanner.SafeRegionRefine(0.15);
+            _rrtPathPlanner.SafeRegionEvaluate(0.05);
             auto time_end_ref = std::chrono::steady_clock::now();
 
             // Get the updated path and publish it
@@ -743,7 +766,6 @@ private:
                 // convexCover(_path, 1.0, _safety_margin, 1e-6);
                 // shortCut();
                 _path_vector = matrixToVector(_path);
-                // publishRRTWaypoints(path_vector);
             }
             double elapsed_ms = std::chrono::duration_cast<std::chrono::seconds>(time_end_ref - time_start_ref).count();
             // std::cout<<"[incremental planner] time duration: "<<elapsed_ms<<std::endl;
@@ -803,7 +825,7 @@ private:
         if(!_is_traj_exist) return false;
         double T = max(0.0, delta_t);
         // std::cout<<"[safety debug] checking safe trajectory, delta t = "<<T<<std::endl;
-        for(double t = T; t < T+1.5; t += 0.01)
+        for(double t = T; t < T+2.0; t += 0.01)
         {
             auto pos_t = _traj.getPos(t);
             if(_rrtPathPlanner.checkTrajPtCol(pos_t))
