@@ -35,7 +35,8 @@
 #include <cfloat>
 #include <iostream>
 #include <vector>
-#include "geo_utils.hpp"
+#include <rrt_path_finder/geo_utils.hpp>
+
 namespace gcopter
 {
 
@@ -74,6 +75,9 @@ namespace gcopter
         Eigen::VectorXd magnitudeBd;
         Eigen::VectorXd penaltyWt;
         Eigen::VectorXd physicalPm;
+        double safety_margin;
+        double zero_cost;
+        bool biasing;
         double allocSpeed;
 
         lbfgs::lbfgs_parameter_t lbfgs_params;
@@ -319,6 +323,43 @@ namespace gcopter
             }
         }
 
+        static inline bool smoothedL1Corridor(const double &x,
+                                      const double &mu,
+                                      const double &b,
+                                      const double &k,
+                                      double &f,
+                                      double &df)
+        {
+            if (x < 0.0)
+            {
+                if(x < -b)
+                {
+                    return false;
+                }
+                else
+                {
+                    f = float(k/(2*b))*x + k;
+                    df = float(k/(2*b));
+                    return true;
+                }
+            }
+            else if (x > mu)
+            {
+                f = x - 0.5 * mu;
+                df = 1.0;
+                return true;
+            }
+            else
+            {
+                const double xdmu = x / mu;
+                const double sqrxdmu = xdmu * xdmu;
+                const double mumxd2 = mu - 0.5 * x;
+                f = mumxd2 * sqrxdmu * xdmu;
+                df = sqrxdmu * ((-0.5) * xdmu + 3.0 * mumxd2 / mu);
+                return true;
+            }
+        }
+
         // magnitudeBounds = [v_max, omg_max, theta_max, thrust_min, thrust_max]^T
         // penaltyWeights = [pos_weight, vel_weight, omg_weight, theta_weight, thrust_weight]^T
         // physicalParams = [vehicle_mass, gravitational_acceleration, horitonral_drag_coeff,
@@ -328,13 +369,16 @@ namespace gcopter
                                                    const Eigen::VectorXi &hIdx,
                                                    const PolyhedraH &hPolys,
                                                    const double &smoothFactor,
+                                                   const double &safety_margin, 
+                                                   const double &zero_cost,
                                                    const int &integralResolution,
                                                    const Eigen::VectorXd &magnitudeBounds,
                                                    const Eigen::VectorXd &penaltyWeights,
                                                    flatness::FlatnessMap &flatMap,
                                                    double &cost,
                                                    Eigen::VectorXd &gradT,
-                                                   Eigen::MatrixX3d &gradC)
+                                                   Eigen::MatrixX3d &gradC,
+                                                   const bool &safety_bias)
         {
             const double velSqrMax = magnitudeBounds(0) * magnitudeBounds(0);
             const double omgSqrMax = magnitudeBounds(1) * magnitudeBounds(1);
@@ -412,10 +456,21 @@ namespace gcopter
                     {
                         outerNormal = hPolys[L].block<1, 3>(k, 0);
                         violaPos = outerNormal.dot(pos) + hPolys[L](k, 3);
-                        if (smoothedL1(violaPos, smoothFactor, violaPosPena, violaPosPenaD))
+                        if(safety_bias)
                         {
-                            gradPos += weightPos * violaPosPenaD * outerNormal;
-                            pena += weightPos * violaPosPena;
+                            if (smoothedL1(violaPos, smoothFactor, violaPosPena, violaPosPenaD))
+                            {
+                                gradPos += weightPos * violaPosPenaD * outerNormal;
+                                pena += weightPos * violaPosPena;
+                            } 
+                        }
+                        else
+                        {
+                            if (smoothedL1Corridor(violaPos, smoothFactor, safety_margin, zero_cost, violaPosPena, violaPosPenaD))
+                            {
+                                gradPos += weightPos * violaPosPenaD * outerNormal;
+                                pena += weightPos * violaPosPena;
+                            }
                         }
                     }
 
@@ -493,9 +548,10 @@ namespace gcopter
 
             attachPenaltyFunctional(obj.times, obj.minco.getCoeffs(),
                                     obj.hPolyIdx, obj.hPolytopes,
-                                    obj.smoothEps, obj.integralRes,
+                                    obj.smoothEps, obj.safety_margin, 
+                                    obj.zero_cost, obj.integralRes,
                                     obj.magnitudeBd, obj.penaltyWt, obj.flatmap,
-                                    cost, obj.partialGradByTimes, obj.partialGradByCoeffs);
+                                    cost, obj.partialGradByTimes, obj.partialGradByCoeffs, obj.biasing);
 
             obj.minco.propogateGrad(obj.partialGradByCoeffs, obj.partialGradByTimes,
                                     obj.gradByPoints, obj.gradByTimes);
@@ -519,8 +575,10 @@ namespace gcopter
             const Eigen::Vector3d &ini = *((const Eigen::Vector3d *)(dataPtrs[1]));
             const Eigen::Vector3d &fin = *((const Eigen::Vector3d *)(dataPtrs[2]));
             const PolyhedraV &vPolys = *((PolyhedraV *)(dataPtrs[3]));
-
+            const std::vector<Eigen::Vector3d> &rrt_path = *((std::vector<Eigen::Vector3d> *)(dataPtrs[4]));
+            const bool node_biasing = *((bool *)(dataPtrs[5]));
             double cost = 0.0;
+            float lambda_rrt = 0.5;
             const int overlaps = vPolys.size() / 2;
 
             Eigen::Matrix3Xd gradP = Eigen::Matrix3Xd::Zero(3, overlaps);
@@ -555,6 +613,31 @@ namespace gcopter
                 {
                     gradP.col(i - 1) -= d / smoothedDistance;
                 }
+                if(node_biasing)
+                {
+                    if (i > 0 && i <= overlaps) // Skip start and end points
+                    {
+                        // Find the closest point in rrt_vec
+                        Eigen::Vector3d closest_rrt_point;
+                        double minDist = std::numeric_limits<double>::max();
+                        for (const Eigen::Vector3d &p : rrt_path)
+                        {
+                            double dist = (b - p).squaredNorm();
+                            if (dist < minDist)
+                            {
+                                minDist = dist;
+                                closest_rrt_point = p;
+                            }
+                        }
+
+                        // Compute correspondence cost
+                        Eigen::Vector3d diff = b - closest_rrt_point;
+                        cost += lambda_rrt * diff.squaredNorm();
+
+                        // Add gradient for correspondence cost
+                        gradP.col(i - 1) += 2.0 * lambda_rrt * diff;
+                    }
+                }
             }
 
             Eigen::VectorXd unitQ;
@@ -588,9 +671,11 @@ namespace gcopter
 
         static inline void getShortestPath(const Eigen::Vector3d &ini,
                                            const Eigen::Vector3d &fin,
+                                           const std::vector<Eigen::Vector3d> &rrt_path,
                                            const PolyhedraV &vPolys,
                                            const double &smoothD,
-                                           Eigen::Matrix3Xd &path)
+                                           Eigen::Matrix3Xd &path,
+                                           const bool &safety_bias)
         {
             const int overlaps = vPolys.size() / 2;
             Eigen::VectorXi vSizes(overlaps);
@@ -599,18 +684,21 @@ namespace gcopter
                 vSizes(i) = vPolys[2 * i + 1].cols();
             }
             Eigen::VectorXd xi(vSizes.sum());
+            // std::cout<<"[shortest path debug] xi size: "<<xi.size()<<std::endl;
+            // std::cout<<"[shortest path debug] number of overlaps: "<<overlaps<<std::endl;
             for (int i = 0, j = 0; i < overlaps; i++)
             {
                 xi.segment(j, vSizes(i)).setConstant(sqrt(1.0 / vSizes(i)));
                 j += vSizes(i);
             }
-
             double minDistance;
-            void *dataPtrs[4];
+            void *dataPtrs[6];
             dataPtrs[0] = (void *)(&smoothD);
             dataPtrs[1] = (void *)(&ini);
             dataPtrs[2] = (void *)(&fin);
             dataPtrs[3] = (void *)(&vPolys);
+            dataPtrs[4] = (void *)(&rrt_path);
+            dataPtrs[5] = (void *)(&safety_bias);
             lbfgs::lbfgs_parameter_t shortest_path_params;
             shortest_path_params.past = 3;
             shortest_path_params.delta = 1.0e-3;
@@ -729,12 +817,16 @@ namespace gcopter
                           const Eigen::Matrix3d &initialPVA,
                           const Eigen::Matrix3d &terminalPVA,
                           const PolyhedraH &safeCorridor,
+                          const std::vector<Eigen::Vector3d> &rrt_path,
                           const double &lengthPerPiece,
                           const double &smoothingFactor,
                           const int &integralResolution,
                           const Eigen::VectorXd &magnitudeBounds,
                           const Eigen::VectorXd &penaltyWeights,
-                          const Eigen::VectorXd &physicalParams)
+                          const Eigen::VectorXd &physicalParams,
+                          const double &safetyMargin,
+                          const double &zeroCost,
+                          const bool &_biasing = true)
         {
             rho = timeWeight;
             headPVA = initialPVA;
@@ -759,9 +851,11 @@ namespace gcopter
             penaltyWt = penaltyWeights;
             physicalPm = physicalParams;
             allocSpeed = magnitudeBd(0) * 3.0;
-
-            getShortestPath(headPVA.col(0), tailPVA.col(0),
-                            vPolytopes, smoothEps, shortPath);
+            safety_margin = safetyMargin;
+            zero_cost = zeroCost;
+            biasing = _biasing;
+            getShortestPath(headPVA.col(0), tailPVA.col(0), rrt_path,
+                            vPolytopes, smoothEps, shortPath, biasing);
             const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
             pieceIdx = (deltas.colwise().norm() / lengthPerPiece).cast<int>().transpose();
             pieceIdx.array() += 1;
@@ -809,16 +903,20 @@ namespace gcopter
         inline double optimize(Trajectory<5> &traj,
                                const double &relCostTol)
         {
+            auto t0 = std::chrono::steady_clock::now();
+
             Eigen::VectorXd x(temporalDim + spatialDim);
             Eigen::Map<Eigen::VectorXd> tau(x.data(), temporalDim);
             Eigen::Map<Eigen::VectorXd> xi(x.data() + temporalDim, spatialDim);
-
             setInitial(shortPath, allocSpeed, pieceIdx, points, times);
+            auto t1 = std::chrono::steady_clock::now();
             backwardT(times, tau);
+            auto t2 = std::chrono::steady_clock::now();
             backwardP(points, vPolyIdx, vPolytopes, xi);
+            auto t3 = std::chrono::steady_clock::now();
 
             double minCostFunctional;
-            lbfgs_params.mem_size = 256;
+            lbfgs_params.mem_size = 16;
             lbfgs_params.past = 3;
             lbfgs_params.min_step = 1.0e-32;
             lbfgs_params.g_epsilon = 0.0;
@@ -831,7 +929,7 @@ namespace gcopter
                                             nullptr,
                                             this,
                                             lbfgs_params);
-
+            auto t4 = std::chrono::steady_clock::now();
             if (ret >= 0)
             {
                 forwardT(tau, times);
@@ -849,6 +947,10 @@ namespace gcopter
             }
 
             return minCostFunctional;
+        }
+        Eigen::Matrix3Xd getShortPath()
+        {
+            return shortPath;
         }
     };
 

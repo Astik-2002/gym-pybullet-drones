@@ -310,10 +310,8 @@ class AviaryWrapper(Node):
     #### Read the Trajectory (pos, vel, acc, jerk, snap)
     def get_trajectory_callback(self, msg):
         if(msg.hover):
-            # self.des_pos = self.pos
-            # self.des_vel = np.array([[0.0, 0.0, 0.0]]).flatten()
             if not self.is_hover_pos_set:
-                self.hover_pos = self.pos + self.vel*0.1
+                self.hover_pos = self.pos + 0.01
                 print('hover position set')
                 print('current_pos: ',self.pos, 'hover_pos: ',self.hover_pos)
                 self.is_hover_pos_set = True
@@ -324,7 +322,8 @@ class AviaryWrapper(Node):
             self.is_hover_pos_set = False
             self.des_pos = np.array([[msg.position.x, msg.position.y, msg.position.z]]).flatten()
             self.des_vel = np.array([[msg.velocity.x, msg.velocity.y, msg.velocity.z]]).flatten()
-            self.des_yaw = 0.0
+            self.des_yaw = msg.yaw
+            print("current command yaw", msg.yaw)
             
 
 

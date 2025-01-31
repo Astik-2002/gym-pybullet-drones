@@ -112,7 +112,7 @@ inline double safeRegionRrtStar::getDis(const Vector3d & p1, const Vector3d & p2
 
 inline double safeRegionRrtStar::radiusSearch( Vector3d & search_Pt)
 {     
-    // if(getDis(search_Pt, start_pt) > sample_range + max_radius )
+    // if(getDis(search_Pt, start_pt) > sample_range)
     //    return max_radius - search_margin;
 
     pcl::PointXYZ searchPoint;

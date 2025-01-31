@@ -387,9 +387,9 @@ class VisionAviary(BaseAviary):
         # super()._addObstacles()
         less = False
         if not less:
-            num_trees= 30
+            num_trees= 60
             x_bounds=(0.5, 55.5)
-            y_bounds=(-10, 10)
+            y_bounds=(-7, 7)
             
             base_path = pkg_resources.resource_filename('gym_pybullet_drones', 'assets')
             tree_urdf = os.path.join(base_path, "simple_tree.urdf")
