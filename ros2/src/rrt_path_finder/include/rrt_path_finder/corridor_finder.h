@@ -62,7 +62,8 @@ class safeRegionRrtStar
 
 		Eigen::MatrixXd Path;
 		Eigen::VectorXd Radius;
-		
+		double h_fov;
+		double v_fov;
 		random_device rd;
 		default_random_engine eng;
 		uniform_real_distribution<double>  rand_rho = uniform_real_distribution<double>(0.0, 1.0);  // random distribution for generating samples inside a unit circle
@@ -81,7 +82,7 @@ class safeRegionRrtStar
 		
 		/* set-up functions */
 		void reset();
-		void setParam( double safety_margin_, double search_margin_, double max_radius_, double sample_range_ );
+		void setParam( double safety_margin_, double search_margin_, double max_radius_, double sample_range_, double h_fov_, double v_fov);
 		void setInput(pcl::PointCloud<pcl::PointXYZ> CloudIn);
 		void setInputforCollision(pcl::PointCloud<pcl::PointXYZ> CloudIn);
 		void setPt( Eigen::Vector3d startPt, Eigen::Vector3d endPt, double xl, double xh, double yl, double yh, double zl, double zh,

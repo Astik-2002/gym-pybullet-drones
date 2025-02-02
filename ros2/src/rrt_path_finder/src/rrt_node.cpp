@@ -250,7 +250,7 @@ private:
     // Initializing rrt parameters
     void setRRTPlannerParams()
     {
-        _rrtPathPlanner.setParam(_safety_margin, _search_margin, _max_radius, _sample_range);
+        _rrtPathPlanner.setParam(_safety_margin, _search_margin, _max_radius, _sample_range, 60, 60);
         _rrtPathPlanner.reset();
     }
 

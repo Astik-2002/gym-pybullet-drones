@@ -10,13 +10,15 @@ safeRegionRrtStar::safeRegionRrtStar( ){
 
 safeRegionRrtStar::~safeRegionRrtStar(){ }
 
-void safeRegionRrtStar::setParam( double safety_margin_, double search_margin_, double max_radius_, double sample_range_ )
+void safeRegionRrtStar::setParam( double safety_margin_, double search_margin_, double max_radius_, double sample_range_, double h_fov_, double v_fov_ )
 {   
     std::cout<<"set param called"<<std::endl;
     safety_margin = safety_margin_;
     search_margin = search_margin_;
     max_radius    = max_radius_;
     sample_range  = sample_range_;
+    h_fov = h_fov_;
+    v_fov = v_fov_;
 }
 
 void safeRegionRrtStar::reset()

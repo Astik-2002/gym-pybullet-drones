@@ -49,8 +49,8 @@ public:
         // rrt.setPt(startPt=start_point, endPt=end_point, xl=-5, xh=15, yl=-5, yh=15, zl=0.0, zh=1,
         //      max_iter=1000, sample_portion=0.1, goal_portion=0.05)
 
-        this->declare_parameter("safety_margin", 1.0);
-        this->declare_parameter("search_margin", 0.4);
+        this->declare_parameter("safety_margin", 0.7);
+        this->declare_parameter("search_margin", 0.7);
         this->declare_parameter("max_radius", 2.0);
         this->declare_parameter("sample_range", 20.0);
         this->declare_parameter("refine_portion", 0.80);
@@ -190,7 +190,7 @@ private:
     float relcostto1 = 0.00001;
     int _max_samples;
     double _commit_distance = 8.0;
-    double max_vel = 1.0;
+    double max_vel = 0.5;
     float threshold = 0.8;
     int trajectory_id = 0;
     int order = 5;
@@ -250,7 +250,7 @@ private:
     // Initializing rrt parameters
     void setRRTPlannerParams()
     {
-        _rrtPathPlanner.setParam(_safety_margin, _search_margin, _max_radius, _sample_range);
+        _rrtPathPlanner.setParam(_safety_margin, _search_margin, _max_radius, _sample_range, 60, 60);
         _rrtPathPlanner.reset();
     }
 
@@ -326,67 +326,73 @@ private:
         // std::cout<<"size of subscribed pcd: "<<cloud_input.points.size()<<std::endl;
         pcd_points.clear();
 
-        for(auto pt: cloud_input.points)
+        pcd_points.reserve(cloud_input.points.size());
+
+        for (const auto& pt : cloud_input.points) 
         {
-            double x = pt.x;
-            double y = pt.y;
-            double z = pt.z;
-
-            double distance = sqrt(pow(x,2) + pow(y,2) + pow(z,2));
-
-            if(distance > _commit_distance)
-            {
-                continue;
-            }
-            double sigma_x = 0.001063 + 0.0007278*distance + 0.003949*pow(distance, 2) + 0.022*pow(distance, 3/2);
-            double sigma_y = 0.04;
-            double sigma_z = sigma_y;
-            std::default_random_engine generator;
-            std::normal_distribution<double> distribution_x(0.0, sigma_x);
-            std::normal_distribution<double> distribution_y(0.0, sigma_y);
-            std::normal_distribution<double> distribution_z(0.0, sigma_z);
-
-            double noise_x = distribution_x(generator);
-            double noise_y = distribution_y(generator);
-            double noise_z = distribution_z(generator);
-
-            double dr1 = sqrt(pow(noise_x,2) + pow(noise_y,2) + pow(noise_z,2)); // constant value added
-            double dr2 = dr1/2;
-            std::vector<double> dr_vec{dr1, dr2};
-            for(double dr: dr_vec)
-            {
-                Eigen::Vector3d p1(x + dr, y - dr, z), p2(x + dr, y, z), p3(x + dr, y + dr, z), p4(x, y - dr, z);
-                Eigen::Vector3d p5(x, y + dr, z), p6(x - dr, y - dr, z), p7(x - dr, y, z), p8(x - dr, y + dr, z), p9(x + dr, y - dr, z - dr);
-                Eigen::Vector3d p10(x + dr, y, z - dr), p11(x + dr, y + dr, z - dr), p12(x, y - dr, z - dr), p13(x, y + dr, z - dr), p14(x - dr, y - dr, z - dr);
-                Eigen::Vector3d p15(x - dr, y, z - dr), p16(x - dr, y + dr, z - dr), p17(x + dr, y - dr, z + dr), p18(x + dr, y, z + dr), p19(x + dr, y + dr, z + dr);
-                Eigen::Vector3d p20(x, y - dr, z + dr), p21(x, y + dr, z + dr), p22(x - dr, y - dr, z + dr), p23(x - dr, y, z + dr), p24(x - dr, y + dr, z + dr);
-                Eigen::Vector3d p25(x, y, z - dr), p26(x, y, z + dr);
-                pcd_points.push_back(p1);
-                pcd_points.push_back(p2);
-                pcd_points.push_back(p3);
-                pcd_points.push_back(p4);
-                pcd_points.push_back(p5);
-                pcd_points.push_back(p6);
-                pcd_points.push_back(p7);
-                pcd_points.push_back(p8);
-                pcd_points.push_back(p9);
-                pcd_points.push_back(p10);
-                pcd_points.push_back(p11);
-                pcd_points.push_back(p12);
-                pcd_points.push_back(p13);
-                pcd_points.push_back(p14);
-                pcd_points.push_back(p15);
-                pcd_points.push_back(p16);
-                pcd_points.push_back(p17);
-                pcd_points.push_back(p18);
-                pcd_points.push_back(p19);
-                pcd_points.push_back(p20);
-                pcd_points.push_back(p21);
-                pcd_points.push_back(p22);
-                pcd_points.push_back(p23);
-                pcd_points.push_back(p24);
-            }
+            pcd_points.emplace_back(pt.x, pt.y, pt.z);
         }
+        // for(auto pt: cloud_input.points)
+        // {
+        //     double x = pt.x;
+        //     double y = pt.y;
+        //     double z = pt.z;
+
+        //     double distance = sqrt(pow(x,2) + pow(y,2) + pow(z,2));
+
+        //     if(distance > _commit_distance)
+        //     {
+        //         continue;
+        //     }
+        //     double sigma_x = 0.001063 + 0.0007278*distance + 0.003949*pow(distance, 2) + 0.022*pow(distance, 3/2);
+        //     double sigma_y = 0.04;
+        //     double sigma_z = sigma_y;
+        //     std::default_random_engine generator;
+        //     std::normal_distribution<double> distribution_x(0.0, sigma_x);
+        //     std::normal_distribution<double> distribution_y(0.0, sigma_y);
+        //     std::normal_distribution<double> distribution_z(0.0, sigma_z);
+
+        //     double noise_x = distribution_x(generator);
+        //     double noise_y = distribution_y(generator);
+        //     double noise_z = distribution_z(generator);
+
+        //     double dr1 = sqrt(pow(noise_x,2) + pow(noise_y,2) + pow(noise_z,2)); // constant value added
+        //     double dr2 = dr1/2;
+        //     std::vector<double> dr_vec{dr1, dr2};
+        //     for(double dr: dr_vec)
+        //     {
+        //         Eigen::Vector3d p1(x + dr, y - dr, z), p2(x + dr, y, z), p3(x + dr, y + dr, z), p4(x, y - dr, z);
+        //         Eigen::Vector3d p5(x, y + dr, z), p6(x - dr, y - dr, z), p7(x - dr, y, z), p8(x - dr, y + dr, z), p9(x + dr, y - dr, z - dr);
+        //         Eigen::Vector3d p10(x + dr, y, z - dr), p11(x + dr, y + dr, z - dr), p12(x, y - dr, z - dr), p13(x, y + dr, z - dr), p14(x - dr, y - dr, z - dr);
+        //         Eigen::Vector3d p15(x - dr, y, z - dr), p16(x - dr, y + dr, z - dr), p17(x + dr, y - dr, z + dr), p18(x + dr, y, z + dr), p19(x + dr, y + dr, z + dr);
+        //         Eigen::Vector3d p20(x, y - dr, z + dr), p21(x, y + dr, z + dr), p22(x - dr, y - dr, z + dr), p23(x - dr, y, z + dr), p24(x - dr, y + dr, z + dr);
+        //         Eigen::Vector3d p25(x, y, z - dr), p26(x, y, z + dr);
+        //         pcd_points.push_back(p1);
+        //         pcd_points.push_back(p2);
+        //         pcd_points.push_back(p3);
+        //         pcd_points.push_back(p4);
+        //         pcd_points.push_back(p5);
+        //         pcd_points.push_back(p6);
+        //         pcd_points.push_back(p7);
+        //         pcd_points.push_back(p8);
+        //         pcd_points.push_back(p9);
+        //         pcd_points.push_back(p10);
+        //         pcd_points.push_back(p11);
+        //         pcd_points.push_back(p12);
+        //         pcd_points.push_back(p13);
+        //         pcd_points.push_back(p14);
+        //         pcd_points.push_back(p15);
+        //         pcd_points.push_back(p16);
+        //         pcd_points.push_back(p17);
+        //         pcd_points.push_back(p18);
+        //         pcd_points.push_back(p19);
+        //         pcd_points.push_back(p20);
+        //         pcd_points.push_back(p21);
+        //         pcd_points.push_back(p22);
+        //         pcd_points.push_back(p23);
+        //         pcd_points.push_back(p24);
+        //     }
+        // }
         _rrtPathPlanner.setInput(cloud_input);
         _rrtPathPlanner.setInputforCollision(cloud_input);
         //RCLCPP_WARN(this->get_logger(), "Point Cloud received");
@@ -585,9 +591,9 @@ private:
         int quadratureRes = 16;
         float weightT = 20.0;
         float smoothingEps = 0.6;
-        float relcostto1 = 1e-3;
+        float relcostto1 = 1e-1;
         _traj.clear();
-        if (!_gCopter.setup(weightT, iniState, finState, hpolys, corridor_points, INFINITY, smoothingEps, quadratureRes, magnitudeBounds, penaltyWeights, physicalParams, _safety_margin, 0.5))
+        if (!_gCopter.setup(weightT, iniState, finState, hpolys, corridor_points, INFINITY, smoothingEps, quadratureRes, magnitudeBounds, penaltyWeights, physicalParams, 0.5*_search_margin + _safety_margin, 1.5))
         {
             std::cout<<"gcopter returned false during setup, traj exist set to false"<<std::endl;
             _is_traj_exist = false;
@@ -843,7 +849,7 @@ private:
         if(!_is_traj_exist) return false;
         double T = max(0.0, delta_t);
         // std::cout<<"[safety debug] checking safe trajectory, delta t = "<<T<<std::endl;
-        for(double t = T; t < _traj.getTotalDuration()*0.75; t += 0.01)
+        for(double t = T; t < _traj.getTotalDuration()*0.50; t += 0.01)
         {
             auto pos_t = _traj.getPos(t);
             if(_rrtPathPlanner.checkTrajPtCol(pos_t))

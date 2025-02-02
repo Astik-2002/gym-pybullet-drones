@@ -326,34 +326,25 @@ namespace gcopter
         static inline bool smoothedL1Corridor(const double &x,
                                       const double &mu,
                                       const double &b,
-                                      const double &k,
                                       double &f,
                                       double &df)
         {
-            if (x < 0.0)
+            // std::cout<<"[GCOPTER DEBUG]: corridor cf called"<<std::endl;
+            if(x < -b)
             {
-                if(x < -b)
-                {
-                    return false;
-                }
-                else
-                {
-                    f = float(k/(2*b))*x + k;
-                    df = float(k/(2*b));
-                    return true;
-                }
+                return false;
             }
-            else if (x > mu)
+            else if (x > -b + mu)
             {
-                f = x - 0.5 * mu;
+                f = (x+b) - 0.5 * mu;
                 df = 1.0;
                 return true;
             }
             else
             {
-                const double xdmu = x / mu;
+                const double xdmu = (x+b) / mu;
                 const double sqrxdmu = xdmu * xdmu;
-                const double mumxd2 = mu - 0.5 * x;
+                const double mumxd2 = mu - 0.5 * (x+b);
                 f = mumxd2 * sqrxdmu * xdmu;
                 df = sqrxdmu * ((-0.5) * xdmu + 3.0 * mumxd2 / mu);
                 return true;
@@ -456,7 +447,7 @@ namespace gcopter
                     {
                         outerNormal = hPolys[L].block<1, 3>(k, 0);
                         violaPos = outerNormal.dot(pos) + hPolys[L](k, 3);
-                        if(safety_bias)
+                        if(!safety_bias)
                         {
                             if (smoothedL1(violaPos, smoothFactor, violaPosPena, violaPosPenaD))
                             {
@@ -466,7 +457,7 @@ namespace gcopter
                         }
                         else
                         {
-                            if (smoothedL1Corridor(violaPos, smoothFactor, safety_margin, zero_cost, violaPosPena, violaPosPenaD))
+                            if (smoothedL1Corridor(violaPos, smoothFactor, safety_margin, violaPosPena, violaPosPenaD))
                             {
                                 gradPos += weightPos * violaPosPenaD * outerNormal;
                                 pena += weightPos * violaPosPena;
@@ -578,7 +569,7 @@ namespace gcopter
             const std::vector<Eigen::Vector3d> &rrt_path = *((std::vector<Eigen::Vector3d> *)(dataPtrs[4]));
             const bool node_biasing = *((bool *)(dataPtrs[5]));
             double cost = 0.0;
-            float lambda_rrt = 0.5;
+            float lambda_rrt = 1.0;
             const int overlaps = vPolys.size() / 2;
 
             Eigen::Matrix3Xd gradP = Eigen::Matrix3Xd::Zero(3, overlaps);
